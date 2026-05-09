@@ -18,6 +18,8 @@ ACTION_COPY_NODES = "复制选中节点"
 ACTION_SHAPE_INFER = "推导形状（链式占位）…"
 ACTION_EXPORT_TORCH = "导出为 PyTorch…"
 
+TAB_EDITOR = "图形编辑"
+TAB_VIZ = "可视化"
 TAB_CANVAS_N = "画布 {}"
 
 MSG_KEEP_ONE_TAB = "至少保留一个画布页。"
@@ -42,3 +44,25 @@ SHAPE_ROW_PREFIX = "  {}：NCHW = {}"
 
 CANVAS_WIRE_TO_IN_PORT = "请将连线拖到目标节点的输入端口（左侧蓝色圆点）。"
 CANVAS_WIRE_ADDED = "已添加连线。"
+
+MENU_EDIT = "编辑"
+ACTION_UNDO = "撤销"
+ACTION_REDO = "重做"
+ACTION_ALIGN_LEFT = "左对齐"
+ACTION_ALIGN_TOP = "顶对齐"
+
+ALIGN_NEED_TWO = "请至少选中两个节点后再对齐。"
+
+UNDO_ADD_NODE = "添加节点"
+UNDO_DELETE = "删除"
+UNDO_ADD_EDGE = "添加连线"
+UNDO_DUPLICATE = "复制节点"
+UNDO_MOVE_NODE = "移动节点"
+UNDO_ALIGN = "对齐节点"
+UNDO_EDIT_PARAM = "修改参数"
+
+ACTION_EXPORT_COPY = "复制 Sequential 源码"
+ACTION_EXPORT_SAVE = "导出 Sequential 为 .py…"
+
+EXPORT_FAIL_TITLE = "导出失败"
+SHAPE_SUPPORT_NOTE = "当前形状推导支持范围请见对话框顶部说明。"

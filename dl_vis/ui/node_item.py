@@ -19,7 +19,8 @@ PORT_RADIUS = 8
 class NodeItem(QGraphicsObject):
     """可拖动节点；端口用于连线。"""
 
-    moved = pyqtSignal(str, float, float)  # node_id, x, y scene pos of origin
+    position_changed = pyqtSignal(str)  # node_id；画布据此写回 GraphDocument 并刷新连线
+    live_drag_finished = pyqtSignal(str)  # 左键在节点主体释放（含拖动结束）；用于延迟提交撤销点
     output_drag_started = pyqtSignal(str, QPointF)  # node_id, scene pos of line start
     output_drag_moved = pyqtSignal(QPointF)
     output_drag_finished = pyqtSignal(QPointF)
@@ -86,7 +87,7 @@ class NodeItem(QGraphicsObject):
 
     def itemChange(self, change, value):
         if change == QGraphicsObject.GraphicsItemChange.ItemPositionHasChanged:
-            self.moved.emit(self.node_id, self.pos().x(), self.pos().y())
+            self.position_changed.emit(self.node_id)
         return super().itemChange(change, value)
 
     def mousePressEvent(self, event: QGraphicsSceneMouseEvent) -> None:
@@ -112,3 +113,5 @@ class NodeItem(QGraphicsObject):
             event.accept()
             return
         super().mouseReleaseEvent(event)
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.live_drag_finished.emit(self.node_id)

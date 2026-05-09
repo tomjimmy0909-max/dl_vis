@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -16,6 +16,7 @@ class ShapeResult:
     ok: bool
     message: str
     shapes_by_node: dict[str, tuple[int, int, int, int]] | None = None  # N,C,H,W
+    warnings: list[str] = field(default_factory=list)
 
 
 def _topological_order(doc: GraphDocument) -> list[str] | None:
@@ -72,14 +73,20 @@ def infer_shapes_linear_nchw(doc: GraphDocument) -> ShapeResult:
         if succ[e.src_id] is not None:
             return ShapeResult(
                 ok=False,
-                message="存在分支（一个节点有多条出边），链式占位推导未实现。",
+                message=(
+                    "存在分支（一个节点有多条出边）。\n"
+                    "【一档】线性链推导不适用；【二档】多分支逐路径推导与汇合尚未在本版本实现。"
+                ),
                 shapes_by_node=None,
             )
         succ[e.src_id] = e.dst_id
         if pred[e.dst_id] is not None:
             return ShapeResult(
                 ok=False,
-                message="存在合并（一个节点有多条入边），链式占位推导未实现。",
+                message=(
+                    "存在合并（一个节点有多条入边）。\n"
+                    "【一档】线性链推导不适用；【二档】汇合点语义推导尚未在本版本实现。"
+                ),
                 shapes_by_node=None,
             )
         pred[e.dst_id] = e.src_id
@@ -88,6 +95,7 @@ def infer_shapes_linear_nchw(doc: GraphDocument) -> ShapeResult:
         return ShapeResult(ok=False, message="Input 节点不应有入边。", shapes_by_node=None)
 
     shapes: dict[str, tuple[int, int, int, int]] = {}
+    warnings: list[str] = []
     cur_id: str | None = root_id
     inp = doc.get_node(root_id)
     if inp is None:
@@ -128,11 +136,14 @@ def infer_shapes_linear_nchw(doc: GraphDocument) -> ShapeResult:
             nw = (wc + 2 * pad - ks) // stride + 1
             shapes[nxt] = (nc, cc, nh, nw)
         elif t == NodeType.FC.value:
-            # 占位：将空间维折叠为 1x1
-            inf = int(child.params.get("in_features", cc * hc * wc))
+            flat = cc * hc * wc
+            inf = int(child.params.get("in_features", flat))
             outf = int(child.params.get("out_features", 10))
+            if inf != flat:
+                warnings.append(
+                    f"FC 节点（id 前缀 {nxt[:8]}…）：in_features={inf} 与上游展平维 C×H×W={flat} 不一致（占位校验）。"
+                )
             shapes[nxt] = (nc, outf, 1, 1)
-            # TODO: 校验 inf 与 cc*hc*wc 一致（第二阶段）
         elif t in (
             NodeType.INPUT.value,
             NodeType.OUTPUT.value,
@@ -149,8 +160,9 @@ def infer_shapes_linear_nchw(doc: GraphDocument) -> ShapeResult:
             )
         cur_id = nxt
 
-    return ShapeResult(
-        ok=True,
-        message="线性链 NCHW 推导完成（占位实现）。",
-        shapes_by_node=shapes,
+    msg = (
+        "【一档】线性链 NCHW 推导完成（单 Input、无分支/汇合）。\n"
+        "【二档】单分叉多路径 / 同形状 element-wise 汇合：尚未实现。\n"
+        "【三档】任意 DAG 完整推导：规划中。"
     )
+    return ShapeResult(ok=True, message=msg, shapes_by_node=shapes, warnings=warnings)
