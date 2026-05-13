@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, pyqtSignal
@@ -15,10 +16,11 @@ from PyQt6.QtWidgets import (
 )
 
 from dl_vis.model.graph_document import GraphDocument
-from dl_vis.model.node_types import palette_label_zh
+from dl_vis.model.node_types import NodeType, palette_label_zh
 from dl_vis.ui.edge_item import EdgeItem
 from dl_vis.ui.graph_undo import DocStateCommand
 from dl_vis.ui import locale_zh as ZH
+from dl_vis.ui.materials_panel import MIME_DATASET
 from dl_vis.ui.node_item import NODE_HEIGHT, NODE_WIDTH, NodeItem
 
 MIME_NODE_TYPE = "application/x-dlvis-node-type"
@@ -48,6 +50,7 @@ class CanvasWidget(QGraphicsView):
         self._undo_stack.canRedoChanged.connect(self.undo_state_changed.emit)
 
         self._pending_drag_undo_snapshot: dict | None = None
+        self._bound_py_path: Path | None = None
 
         self._scene = QGraphicsScene(self)
         self._scene.setSceneRect(QRectF(-2000, -2000, 4000, 4000))
@@ -111,6 +114,13 @@ class CanvasWidget(QGraphicsView):
     def graph_document(self) -> GraphDocument:
         return self._doc
 
+    def bound_py_path(self) -> Path | None:
+        """当前画布绑定的 ``.py`` 脚本（由「开始 → 打开现有文件」等设置）。"""
+        return self._bound_py_path
+
+    def set_bound_py_path(self, path: Path | None) -> None:
+        self._bound_py_path = path.resolve() if path is not None else None
+
     def set_graph_document(self, doc: GraphDocument, *, clear_undo: bool = True) -> None:
         if clear_undo:
             self._undo_stack.clear()
@@ -133,7 +143,8 @@ class CanvasWidget(QGraphicsView):
         self._clear_temp_wire()
 
         for gn in self._doc.iter_nodes():
-            item = NodeItem(gn.id, palette_label_zh(gn.type))
+            accent = "dataset" if gn.type == NodeType.DATASET.value else None
+            item = NodeItem(gn.id, palette_label_zh(gn.type), accent=accent)
             item.setPos(QPointF(gn.x, gn.y))
             self._wire_node_item(item)
             self._scene.addItem(item)
@@ -284,7 +295,8 @@ class CanvasWidget(QGraphicsView):
         x = scene_pos.x() - NODE_WIDTH / 2
         y = scene_pos.y() - NODE_HEIGHT / 2
         gn = self._doc.add_node(node_type, x=x, y=y)
-        item = NodeItem(gn.id, palette_label_zh(gn.type))
+        accent = "dataset" if gn.type == NodeType.DATASET.value else None
+        item = NodeItem(gn.id, palette_label_zh(gn.type), accent=accent)
         item.setPos(QPointF(gn.x, gn.y))
         self._wire_node_item(item)
         self._scene.addItem(item)
@@ -292,6 +304,27 @@ class CanvasWidget(QGraphicsView):
         after = copy.deepcopy(self._doc.to_dict())
         self.push_undo_if_changed(before, after, ZH.UNDO_ADD_NODE)
         self.document_modified.emit()
+
+    def add_dataset_node_at_scene(self, scene_pos: QPointF, path: str, path_kind: str) -> None:
+        """从素材栏或外部文件拖放创建 Dataset 节点。"""
+        before = copy.deepcopy(self._doc.to_dict())
+        x = scene_pos.x() - NODE_WIDTH / 2
+        y = scene_pos.y() - NODE_HEIGHT / 2
+        gn = self._doc.add_node(
+            NodeType.DATASET.value,
+            x=x,
+            y=y,
+            params={"path": path, "path_kind": path_kind},
+        )
+        item = NodeItem(gn.id, palette_label_zh(gn.type), accent="dataset")
+        item.setPos(QPointF(gn.x, gn.y))
+        self._wire_node_item(item)
+        self._scene.addItem(item)
+        self._node_items[gn.id] = item
+        after = copy.deepcopy(self._doc.to_dict())
+        self.push_undo_if_changed(before, after, ZH.UNDO_ADD_NODE)
+        self.document_modified.emit()
+        self.status_message.emit(ZH.MSG_DATASET_NODE_ADDED)
 
     def duplicate_selected_nodes(self) -> None:
         """复制选中节点（略偏移，不复制连线）。"""
@@ -305,7 +338,8 @@ class CanvasWidget(QGraphicsView):
             if gn is None:
                 continue
             new_gn = self._doc.add_node(gn.type, x=gn.x + 24, y=gn.y + 24, params=dict(gn.params))
-            item = NodeItem(new_gn.id, palette_label_zh(new_gn.type))
+            accent = "dataset" if new_gn.type == NodeType.DATASET.value else None
+            item = NodeItem(new_gn.id, palette_label_zh(new_gn.type), accent=accent)
             item.setPos(QPointF(new_gn.x, new_gn.y))
             self._wire_node_item(item)
             self._scene.addItem(item)
@@ -340,26 +374,57 @@ class CanvasWidget(QGraphicsView):
         self.push_undo_if_changed(before, after, ZH.UNDO_ALIGN)
         self.document_modified.emit()
 
+    @staticmethod
+    def _mime_has_local_file(mime) -> bool:
+        if not mime.hasUrls():
+            return False
+        return any(u.isLocalFile() and u.toLocalFile() for u in mime.urls())
+
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
-        if event.mimeData().hasFormat(MIME_NODE_TYPE):
+        md = event.mimeData()
+        if md.hasFormat(MIME_NODE_TYPE) or md.hasFormat(MIME_DATASET) or self._mime_has_local_file(md):
             event.acceptProposedAction()
-        else:
-            super().dragEnterEvent(event)
+            return
+        super().dragEnterEvent(event)
 
     def dragMoveEvent(self, event) -> None:
-        if event.mimeData().hasFormat(MIME_NODE_TYPE):
+        md = event.mimeData()
+        if md.hasFormat(MIME_NODE_TYPE) or md.hasFormat(MIME_DATASET) or self._mime_has_local_file(md):
             event.acceptProposedAction()
-        else:
-            super().dragMoveEvent(event)
+            return
+        super().dragMoveEvent(event)
 
     def dropEvent(self, event: QDropEvent) -> None:
-        if not event.mimeData().hasFormat(MIME_NODE_TYPE):
-            super().dropEvent(event)
-            return
-        raw = bytes(event.mimeData().data(MIME_NODE_TYPE)).decode("utf-8")
+        md = event.mimeData()
         pos = self.mapToScene(event.position().toPoint())
-        self.add_node_type_at_scene(raw.strip(), pos)
-        event.acceptProposedAction()
+        if md.hasFormat(MIME_DATASET):
+            try:
+                raw = bytes(md.data(MIME_DATASET)).decode("utf-8")
+                data = json.loads(raw)
+                self.add_dataset_node_at_scene(pos, str(data["path"]), str(data.get("kind", "file")))
+            except (json.JSONDecodeError, KeyError, UnicodeDecodeError):
+                self.status_message.emit(ZH.MSG_DATASET_DROP_INVALID)
+                event.ignore()
+                return
+            event.acceptProposedAction()
+            return
+        if self._mime_has_local_file(md):
+            for u in md.urls():
+                if not u.isLocalFile():
+                    continue
+                lf = u.toLocalFile()
+                if not lf:
+                    continue
+                p = Path(lf)
+                self.add_dataset_node_at_scene(pos, str(p.resolve()), "folder" if p.is_dir() else "file")
+                event.acceptProposedAction()
+                return
+        if md.hasFormat(MIME_NODE_TYPE):
+            raw = bytes(md.data(MIME_NODE_TYPE)).decode("utf-8")
+            self.add_node_type_at_scene(raw.strip(), pos)
+            event.acceptProposedAction()
+            return
+        super().dropEvent(event)
 
     def wheelEvent(self, event) -> None:
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:

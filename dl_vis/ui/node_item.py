@@ -25,10 +25,11 @@ class NodeItem(QGraphicsObject):
     output_drag_moved = pyqtSignal(QPointF)
     output_drag_finished = pyqtSignal(QPointF)
 
-    def __init__(self, node_id: str, title: str, parent: QGraphicsObject | None = None) -> None:
+    def __init__(self, node_id: str, title: str, *, accent: str | None = None, parent: QGraphicsObject | None = None) -> None:
         super().__init__(parent)
         self.node_id = node_id
         self.title = title
+        self._accent = accent
         self.setFlag(QGraphicsObject.GraphicsItemFlag.ItemIsMovable, True)
         self.setFlag(QGraphicsObject.GraphicsItemFlag.ItemIsSelectable, True)
         self.setFlag(QGraphicsObject.GraphicsItemFlag.ItemSendsGeometryChanges, True)
@@ -69,7 +70,11 @@ class NodeItem(QGraphicsObject):
             pen.setColor(QColor(0, 120, 215))
             pen.setWidth(3)
         painter.setPen(pen)
-        painter.setBrush(QBrush(QColor(245, 248, 252)))
+        if self._accent == "dataset":
+            fill = QColor(222, 245, 222)
+        else:
+            fill = QColor(245, 248, 252)
+        painter.setBrush(QBrush(fill))
         painter.drawRoundedRect(body, 6, 6)
 
         # ports

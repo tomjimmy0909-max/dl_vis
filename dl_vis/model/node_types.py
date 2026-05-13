@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any
+from typing import Any, Union
+
+# 可编辑字段：``(键, 类型)`` 或 ``(键, "choice", (选项…))``
+EditableFieldSpec = Union[tuple[str, str], tuple[str, str, tuple[str, ...]]]
 
 
 class NodeType(str, Enum):
     INPUT = "Input"
     OUTPUT = "Output"
+    DATASET = "Dataset"
     CONV3X3 = "Conv3x3"
     CONV1X1 = "Conv1x1"
     MAX_POOL = "MaxPool"
@@ -18,6 +22,9 @@ class NodeType(str, Enum):
     SIGMOID = "Sigmoid"
     SOFTMAX = "Softmax"
     BN = "BN"
+    ADD = "Add"
+    CONCAT = "Concat"
+    MULTIPLY = "Multiply"
     # 占位：仅 UI + 默认参数
     RESIDUAL = "Residual"
     PRUNE = "Prune"
@@ -34,6 +41,17 @@ DEFAULT_PARAMS: dict[str, dict[str, Any]] = {
     },
     NodeType.OUTPUT.value: {
         "name": "logits",
+        "task": "classify",
+        "num_classes": 0,
+        "loss": "cross_entropy",
+        "train_epochs": 20,
+        "train_lr": 1e-3,
+    },
+    NodeType.DATASET.value: {
+        "path": "",
+        "path_kind": "file",
+        "role": "unspecified",
+        "csv_skip_header": False,
     },
     NodeType.CONV3X3.value: {
         "in_channels": 3,
@@ -77,6 +95,11 @@ DEFAULT_PARAMS: dict[str, dict[str, Any]] = {
         "momentum": 0.1,
         "affine": True,
     },
+    NodeType.ADD.value: {},
+    NodeType.CONCAT.value: {
+        "concat_dim": 1,
+    },
+    NodeType.MULTIPLY.value: {},
     NodeType.RESIDUAL.value: {
         "placeholder": True,
         "note": "第二阶段展开为 Module",
@@ -94,7 +117,7 @@ DEFAULT_PARAMS: dict[str, dict[str, Any]] = {
 
 # UI 动态表单字段：(参数名, 控件类型)
 # 类型: int | float | bool | str
-EDITABLE_FIELDS: dict[str, list[tuple[str, str]]] = {
+EDITABLE_FIELDS: dict[str, list[EditableFieldSpec]] = {
     NodeType.INPUT.value: [
         ("batch", "int"),
         ("channels", "int"),
@@ -103,6 +126,20 @@ EDITABLE_FIELDS: dict[str, list[tuple[str, str]]] = {
     ],
     NodeType.OUTPUT.value: [
         ("name", "str"),
+        ("task", "choice", ("classify",)),
+        ("num_classes", "int"),
+        ("loss", "choice", ("cross_entropy",)),
+        ("train_epochs", "int"),
+        ("train_lr", "float"),
+    ],
+    NodeType.DATASET.value: [
+        ("path", "str"),
+        (
+            "role",
+            "choice",
+            ("unspecified", "to_input", "from_output"),
+        ),
+        ("csv_skip_header", "bool"),
     ],
     NodeType.CONV3X3.value: [
         ("in_channels", "int"),
@@ -146,6 +183,11 @@ EDITABLE_FIELDS: dict[str, list[tuple[str, str]]] = {
         ("momentum", "float"),
         ("affine", "bool"),
     ],
+    NodeType.ADD.value: [],
+    NodeType.CONCAT.value: [
+        ("concat_dim", "int"),
+    ],
+    NodeType.MULTIPLY.value: [],
     NodeType.RESIDUAL.value: [
         ("placeholder", "bool"),
         ("note", "str"),
@@ -171,8 +213,8 @@ def default_params_for_type(node_type: str) -> dict[str, Any]:
 
 
 def palette_types() -> list[str]:
-    """调色板显示顺序（全部已知类型）。"""
-    return [m.value for m in NodeType]
+    """调色板显示顺序（全部算子类型；Dataset 仅在「训练素材」侧栏）。"""
+    return [m.value for m in NodeType if m != NodeType.DATASET]
 
 
 def is_known_type(node_type: str) -> bool:
@@ -190,11 +232,19 @@ NODE_PALETTE_ZH: dict[str, tuple[str, str]] = {
         "【连接】仅有输出端口（右侧）；下游接单入边的第一个算子。\n"
         "【说明】形状推导占位逻辑要求全图恰好一个输入节点。",
     ),
+    NodeType.DATASET.value: (
+        "训练数据集",
+        "【类型标识】Dataset\n"
+        "【作用】在图中标记训练/评测数据来源（文件或文件夹路径）。\n"
+        "【参数】path：绝对或相对路径；role：与模型关联的说明（unspecified/to_input/from_output）。\n"
+        "【连接】建议：数据集出口 → Input 入口（数据送入网络）；或 Output 出口 → 数据集入口（标签、落盘或与输出绑定）。\n"
+        "【说明】不参与 NCHW 张量推导与 nn.Sequential 导出；导出时自动忽略。",
+    ),
     NodeType.OUTPUT.value: (
         "输出头",
         "【类型标识】Output\n"
         "【作用】标记网络的逻辑输出（如 logits / 嵌入），便于导出与可视化。\n"
-        "【参数】name：输出名称字符串。\n"
+        "【参数】name：输出名称；task：任务占位（当前仅 classify）；num_classes：类别数（0 表示与链上末层 FC 的 out_features 一致）；loss：损失占位（当前仅 cross_entropy）。\n"
         "【连接】左侧输入端口接上游算子；右侧无输出。\n"
         "【说明】不参与卷积维度推导时可视为透传。",
     ),
@@ -270,6 +320,26 @@ NODE_PALETTE_ZH: dict[str, tuple[str, str]] = {
         "【维度】通道维须与 num_features 一致；空间维占位推导中保持不变。\n"
         "【连接】左入右出；对应 nn.BatchNorm2d。",
     ),
+    NodeType.ADD.value: (
+        "相加（逐元素）",
+        "【类型标识】Add\n"
+        "【作用】多路同形状 NCHW 逐元素相加（torch.add）。\n"
+        "【维度】所有输入的 N、C、H、W 须一致。\n"
+        "【连接】至少两路入边指向本节点（边顺序决定与 Concat 以外的约定）；一路出边。",
+    ),
+    NodeType.CONCAT.value: (
+        "拼接 Concat",
+        "【类型标识】Concat\n"
+        "【作用】沿指定维拼接张量（torch.cat）。\n"
+        "【参数】concat_dim：0=N，1=C，2=H，3=W（可为负数，按 4 维语义归一）。\n"
+        "【维度】除拼接维外其余维必须一致；输出在拼接维上为各输入之和。",
+    ),
+    NodeType.MULTIPLY.value: (
+        "相乘（逐元素）",
+        "【类型标识】Multiply\n"
+        "【作用】多路同形状逐元素相乘。\n"
+        "【维度】所有输入 N、C、H、W 须一致。",
+    ),
     NodeType.RESIDUAL.value: (
         "残差（占位）",
         "【类型标识】Residual\n"
@@ -303,6 +373,11 @@ PARAM_LABEL_ZH: dict[str, str] = {
     "height": "高度 H",
     "width": "宽度 W",
     "name": "输出名称",
+    "task": "任务类型（占位）",
+    "num_classes": "类别数 K（0=继承末层 FC）",
+    "loss": "损失（占位）",
+    "train_epochs": "导出/默认训练轮数",
+    "train_lr": "导出/默认学习率",
     "in_channels": "输入通道数",
     "out_channels": "输出通道数",
     "stride": "步幅",
@@ -322,6 +397,11 @@ PARAM_LABEL_ZH: dict[str, str] = {
     "sparsity": "稀疏比例（占位）",
     "embed_dim": "嵌入维度",
     "num_heads": "注意力头数",
+    "concat_dim": "拼接维（0=N,1=C,2=H,3=W）",
+    "path": "数据路径（文件或文件夹）",
+    "path_kind": "路径类型（file/folder，自动）",
+    "role": "与模型的关联（说明）",
+    "csv_skip_header": "CSV 首行作表头（跳过）",
 }
 
 

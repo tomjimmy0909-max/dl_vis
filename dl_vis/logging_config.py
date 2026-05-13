@@ -64,10 +64,50 @@ def install_excepthook(log: logging.Logger | None = None) -> Callable[..., None]
 
     def _hook(exc_type, exc, tb) -> None:
         log.critical("未捕获异常", exc_info=(exc_type, exc, tb))
+        try:
+            from dl_vis.error_report import log_report_location, write_error_report
+
+            path = write_error_report(exc_type, exc, tb, source="sys.excepthook_main")
+            log_report_location(log, path, source="sys.excepthook_main")
+        except Exception:
+            log.exception("DL_VIS_ERROR_REPORT 主线程写入失败")
         prev(exc_type, exc, tb)
 
     sys.excepthook = _hook
     return prev
+
+
+def install_thread_excepthook(log: logging.Logger | None = None) -> None:
+    """子线程未捕获异常同样落盘 JSON（Python 3.8+）。"""
+    import threading
+
+    log = log or logging.getLogger("dl_vis")
+    prev = getattr(threading, "excepthook", None)
+    if prev is None:
+        return
+
+    def _hook(args: threading.ExceptHookArgs) -> None:  # type: ignore[attr-defined]
+        log.critical(
+            "未捕获线程异常 thread=%s",
+            getattr(args.thread, "name", str(args.thread)),
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
+        try:
+            from dl_vis.error_report import log_report_location, write_error_report
+
+            path = write_error_report(
+                args.exc_type,
+                args.exc_value,
+                args.exc_traceback,
+                source="threading.excepthook",
+                context_extra={"thread_name": getattr(args.thread, "name", "")},
+            )
+            log_report_location(log, path, source="threading.excepthook")
+        except Exception:
+            log.exception("DL_VIS_ERROR_REPORT 子线程写入失败")
+        prev(args)
+
+    threading.excepthook = _hook  # type: ignore[assignment]
 
 
 def install_qt_message_handler(log: logging.Logger | None = None) -> Callable[..., None] | None:
