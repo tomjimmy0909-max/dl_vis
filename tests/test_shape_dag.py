@@ -112,6 +112,69 @@ class TestShapeDAG(unittest.TestCase):
         r = infer_shapes_dag_nchw(d)
         self.assertTrue(r.ok)
 
+    def test_preproc_video_then_conv(self) -> None:
+        d = GraphDocument()
+        inp = d.add_node(NodeType.INPUT.value, 0, 0, params={"batch": 1, "channels": 3, "height": 64, "width": 64})
+        vf = d.add_node(
+            NodeType.VIDEO_FRAME_PACK.value,
+            1,
+            0,
+            params={"max_frames": 4, "out_height": 32, "out_width": 32},
+        )
+        cv = d.add_node(
+            NodeType.CONV3X3.value,
+            2,
+            0,
+            params={"in_channels": 12, "out_channels": 8, "stride": 1, "padding": 1, "bias": True},
+        )
+        out = d.add_node(NodeType.OUTPUT.value, 3, 0)
+        d.add_edge(inp.id, vf.id)
+        d.add_edge(vf.id, cv.id)
+        d.add_edge(cv.id, out.id)
+        r = infer_shapes_dag_nchw(d)
+        self.assertTrue(r.ok, r.message)
+        assert r.shapes_by_node is not None
+        self.assertEqual(r.shapes_by_node[vf.id], (1, 12, 32, 32))
+
+    def test_preproc_mel_shape(self) -> None:
+        d = GraphDocument()
+        inp = d.add_node(NodeType.INPUT.value, 0, 0, params={"batch": 2, "channels": 1, "height": 1, "width": 1})
+        mel = d.add_node(
+            NodeType.MEL_SPECTROGRAM.value,
+            1,
+            0,
+            params={"n_mels": 40, "mel_width": 128},
+        )
+        out = d.add_node(NodeType.OUTPUT.value, 2, 0)
+        d.add_edge(inp.id, mel.id)
+        d.add_edge(mel.id, out.id)
+        r = infer_shapes_dag_nchw(d)
+        self.assertTrue(r.ok)
+        assert r.shapes_by_node is not None
+        self.assertEqual(r.shapes_by_node[mel.id], (2, 1, 40, 128))
+
+    def test_export_skips_preproc_nodes(self) -> None:
+        from dl_vis.logic.export_torch import export_sequential_source
+
+        d = GraphDocument()
+        inp = d.add_node(NodeType.INPUT.value, 0, 0, params={"batch": 1, "channels": 3, "height": 32, "width": 32})
+        he = d.add_node(NodeType.HIST_EQUALIZE.value, 1, 0)
+        cv = d.add_node(
+            NodeType.CONV3X3.value,
+            2,
+            0,
+            params={"in_channels": 3, "out_channels": 4, "stride": 1, "padding": 1, "bias": True},
+        )
+        out = d.add_node(NodeType.OUTPUT.value, 3, 0)
+        d.add_edge(inp.id, he.id)
+        d.add_edge(he.id, cv.id)
+        d.add_edge(cv.id, out.id)
+        src = export_sequential_source(d)
+        self.assertIn("Conv2d", src)
+        self.assertNotIn("HistEqualize", src)
+        self.assertNotIn("MelSpectrogram", src)
+        self.assertNotIn("VideoFramePack", src)
+
     def test_linear_chain_skips_dataset(self) -> None:
         d = GraphDocument()
         inp = d.add_node(NodeType.INPUT.value, 0, 0)

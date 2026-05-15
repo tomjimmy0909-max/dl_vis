@@ -1,4 +1,10 @@
-"""形状推导：线性链（一档）与 DAG+汇合点（Add/Concat/Multiply）。"""
+"""形状推导：线性链（一档）与 DAG+汇合点（Add/Concat/Multiply）。
+
+本模块负责根据计算图的拓扑关系推导每个节点输出的 NCHW 形状。
+支持两种模式：
+  - infer_shapes_linear_nchw：线性链，无分支/汇合
+  - infer_shapes_dag_nchw：DAG，支持 Add/Concat/Multiply 汇合
+"""
 
 from __future__ import annotations
 
@@ -16,6 +22,13 @@ if TYPE_CHECKING:
 
 @dataclass
 class ShapeResult:
+    """形状推导结果封装。
+
+    - ok: 推导是否成功
+    - message: 总结性文字说明
+    - shapes_by_node: 每节点 NCHW 形状字典，键为节点 ID
+    - warnings: 推导过程中的警告信息（如参数不匹配但未阻断）
+    """
     ok: bool
     message: str
     shapes_by_node: dict[str, tuple[int, int, int, int]] | None = None  # N,C,H,W
@@ -23,10 +36,12 @@ class ShapeResult:
 
 
 def _short_id(nid: str) -> str:
+    """截断节点 ID 用于错误信息显示，避免 UUID 过长。"""
     return f"{nid[:8]}…" if len(nid) > 8 else nid
 
 
 def _axis_nchw(concat_dim: int) -> int:
+    """将 Concat 的拼接维（可能为负数）映射到 NCHW 的 0~3 索引。"""
     d = concat_dim + 4 if concat_dim < 0 else concat_dim
     if d not in (0, 1, 2, 3):
         raise ValueError(f"concat_dim={concat_dim} 无法映射到 NCHW 四维。")
@@ -42,18 +57,39 @@ def _propagate_unary(
     nxt_id: str,
     warnings: list[str],
 ) -> tuple[int, int, int, int] | str:
-    """单输入算子：已知上游 NCHW，返回下游形状或错误文案。"""
+    """单输入算子：已知上游 NCHW，返回下游形状或错误文案。
+
+    根据算子类型执行不同的形状传播规则：
+    - 透传类（ReLU/Sigmoid/Softmax/Output等）：形状不变
+    - 卷积类：按公式 (H + 2P - K) / S + 1 计算新尺寸
+    - 池化类：与卷积类似但通道数不变
+    - FC 类：展平到 (N, out_features, 1, 1)
+    """
     t = child.type
+    # === 透传类：形状不变 ===
     if t in (
         NodeType.RELU.value,
         NodeType.SIGMOID.value,
         NodeType.SOFTMAX.value,
         NodeType.OUTPUT.value,
+        NodeType.HIST_EQUALIZE.value,
         NodeType.RESIDUAL.value,
         NodeType.PRUNE.value,
         NodeType.ATTENTION.value,
     ):
         return (nc, cc, hc, wc)
+    if t == NodeType.MEL_SPECTROGRAM.value:
+        p = child.params
+        nm = int(p.get("n_mels", 64))
+        mw = int(p.get("mel_width", 224))
+        return (nc, 1, nm, mw)
+    if t == NodeType.VIDEO_FRAME_PACK.value:
+        p = child.params
+        tf = int(p.get("max_frames", 8))
+        oh = int(p.get("out_height", 224))
+        ow = int(p.get("out_width", 224))
+        return (nc, 3 * max(1, tf), oh, ow)
+    # === BN 层：通道数校验，形状不变 ===
     if t == NodeType.BN.value:
         nf = int(child.params.get("num_features", cc))
         if nf != cc:
@@ -61,6 +97,7 @@ def _propagate_unary(
                 f"BN 节点（{_short_id(nxt_id)}）：num_features={nf} 与上游通道 {cc} 不一致（占位警告）。"
             )
         return (nc, cc, hc, wc)
+    # === 卷积层（3×3 或 1×1）：改变通道数和空间尺寸 ===
     if t == NodeType.CONV3X3.value or t == NodeType.CONV1X1.value:
         cp = child.params
         oc = int(cp.get("out_channels", cc))
@@ -68,9 +105,11 @@ def _propagate_unary(
         pad = int(cp.get("padding", 0))
         kh = 3 if t == NodeType.CONV3X3.value else 1
         kw = kh
+        # 标准卷积输出尺寸公式
         nh = (hc + 2 * pad - kh) // stride + 1
         nw = (wc + 2 * pad - kw) // stride + 1
         return (nc, oc, nh, nw)
+    # === 池化层：空间尺寸减半（典型），通道数不变 ===
     if t == NodeType.MAX_POOL.value or t == NodeType.AVG_POOL.value:
         cp = child.params
         ks = int(cp.get("kernel_size", 2))
@@ -79,6 +118,7 @@ def _propagate_unary(
         nh = (hc + 2 * pad - ks) // stride + 1
         nw = (wc + 2 * pad - ks) // stride + 1
         return (nc, cc, nh, nw)
+    # === 全连接层：展平时空维，输出 (N, out_features, 1, 1) ===
     if t == NodeType.FC.value:
         flat = cc * hc * wc
         inf = int(child.params.get("in_features", flat))
@@ -96,6 +136,7 @@ def _propagate_unary(
 def _fuse_elementwise(
     shapes: list[tuple[int, int, int, int]], op_label: str
 ) -> tuple[int, int, int, int] | str:
+    """逐元素融合（Add/Multiply）：所有输入 NCHW 必须完全一致。"""
     base = shapes[0]
     for s in shapes[1:]:
         if s != base:
@@ -106,6 +147,10 @@ def _fuse_elementwise(
 def _fuse_concat(
     shapes: list[tuple[int, int, int, int]], axis: int
 ) -> tuple[int, int, int, int] | str:
+    """Concat 融合：沿指定维拼接，其他维必须一致。
+
+    axis 为 NCHW 索引（0=N, 1=C, 2=H, 3=W），拼接后对应维求和。
+    """
     ns = [s[0] for s in shapes]
     cs = [s[1] for s in shapes]
     hs = [s[2] for s in shapes]

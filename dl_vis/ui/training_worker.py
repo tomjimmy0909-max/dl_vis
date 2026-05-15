@@ -33,8 +33,13 @@ class TrainingJobConfig:
 
 
 class TrainingWorker(QThread):
-    """在子线程中运行 ``GraphExecutor`` 训练；通过信号回传进度与结果。"""
+    """在子线程中运行 ``GraphExecutor`` 训练；通过信号回传进度与结果。
 
+    使用 QThread 避免长时间训练阻塞 UI 响应。
+    通过 PyQt 信号安全地将训练进度和结果传回主线程。
+    """
+
+    # 信号定义：epoch 级损失、训练完成、训练失败
     epoch_loss = pyqtSignal(int, float)
     finished_ok = pyqtSignal(list)
     failed = pyqtSignal(str)
@@ -45,13 +50,16 @@ class TrainingWorker(QThread):
         self._cfg = cfg
 
     def run(self) -> None:  # type: ignore[override]
+        """子线程入口：根据配置的数据模式执行训练。"""
         try:
             ex = GraphExecutor(self._doc)
 
+            # epoch 回调函数，通过信号将损失值传回 UI 线程
             def on_ep(ep: int, lv: float) -> None:
                 self.epoch_loss.emit(ep, lv)
 
             if self._cfg.mode == "graph":
+                # 使用画布上 Dataset→Input 绑定的数据进行训练
                 losses = ex.train_from_graph_dataset(
                     epochs=self._cfg.epochs,
                     lr=self._cfg.lr,
@@ -62,6 +70,7 @@ class TrainingWorker(QThread):
                 return
 
             if self._cfg.mode == "synthetic":
+                # 使用与 Input 同形的随机张量 + 随机标签进行训练
                 losses = ex.train_synthetic(
                     epochs=self._cfg.epochs,
                     lr=self._cfg.lr,
@@ -72,6 +81,7 @@ class TrainingWorker(QThread):
                 return
 
             if self._cfg.mode == "npy":
+                # 从 .npy 文件加载 X 和 y
                 x, y = ex.load_npy_pair(self._cfg.x_path, self._cfg.y_path)
                 losses = ex.train_with_arrays(
                     x,
@@ -85,6 +95,7 @@ class TrainingWorker(QThread):
                 return
 
             if self._cfg.mode == "csv":
+                # 从 CSV 文件加载特征和标签
                 x, y = ex.load_csv_nchw_labels(
                     self._cfg.csv_path,
                     channels=self._cfg.channels,
@@ -107,6 +118,7 @@ class TrainingWorker(QThread):
         except Exception as e:  # noqa: BLE001 — 线程边界统一转字符串
             log = logging.getLogger("dl_vis.training")
             log.exception("训练线程失败 mode=%s", self._cfg.mode)
+            # 尝试将异常写入结构化 JSON 错误报告
             try:
                 from dl_vis.error_report import log_report_location, write_error_report_from_exc
 

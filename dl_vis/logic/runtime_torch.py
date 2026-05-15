@@ -189,18 +189,23 @@ def load_npy_training_pair(
     x_path: str,
     y_path: str,
 ) -> tuple["torch.Tensor", "torch.Tensor"]:
-    """加载 ``.npy``：``X`` 形状 ``(N,C,H,W)``，``y`` 形状 ``(N,)`` 整型标签。"""
+    """加载 ``.npy``：``X`` 形状 ``(N,C,H,W)``，``y`` 形状 ``(N,)`` 整型标签。
+
+    这是双文件数据加载的核心函数，用于导出脚本和 UI 内的图上数据集训练。
+    """
     import numpy as np
     import torch
 
     x_arr = np.load(x_path, allow_pickle=False)
     y_arr = np.load(y_path, allow_pickle=False)
+    # 校验维度：X 须为 NCHW 四维，y 须为一维标签
     if x_arr.ndim != 4:
         raise ValueError(f"期望 X 为 4 维 NCHW，实际 ndim={x_arr.ndim}。")
     if y_arr.ndim != 1:
         raise ValueError(f"期望 y 为 1 维 (N,)，实际 shape={y_arr.shape}。")
     if x_arr.shape[0] != y_arr.shape[0]:
         raise ValueError("X 与 y 的批次维 N 不一致。")
+    # 转为 PyTorch 张量，float32 特征 + int64 标签（与 CrossEntropyLoss 要求一致）
     x_t = torch.from_numpy(x_arr.astype("float32", copy=False))
     y_t = torch.from_numpy(y_arr.astype("int64", copy=False))
     return x_t, y_t
@@ -216,6 +221,10 @@ def load_csv_nchw_labels(
 ) -> tuple["torch.Tensor", "torch.Tensor"]:
     """
     读取 CSV：每行前 ``C*H*W`` 列为特征（按行主序展平再 reshape 为 NCHW），最后一列为整型标签。
+
+    CSV 格式约定：
+    - 每行：col[0..need-1] = 展平特征，col[need] = 整型标签
+    - 支持可选的表头行跳过
     """
     import csv
 
@@ -240,6 +249,7 @@ def load_csv_nchw_labels(
             ys.append(lab)
     if not xs:
         raise ValueError("CSV 无有效数据行。")
+    # 展平特征 reshape 为 NCHW 格式
     arr = np.array(xs, dtype=np.float32).reshape(len(xs), channels, height, width)
     y_arr = np.array(ys, dtype=np.int64)
     return torch.from_numpy(arr), torch.from_numpy(y_arr)

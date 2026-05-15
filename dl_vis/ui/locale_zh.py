@@ -124,6 +124,12 @@ UNDO_MOVE_NODE = "移动节点"
 UNDO_ALIGN = "对齐节点"
 UNDO_EDIT_PARAM = "修改参数"
 
+TAB_DATA_PROC = "数据与预处理"
+TAB_DATA_PROC_HINT = (
+    "从下列条目拖到画布，与卷积等节点连线组成预处理+网络结构；选中节点后在右侧「参数」栏微调。"
+    "此类节点不参与 nn.Sequential 导出，运行时请使用 logic.dataproc 中对应模块。"
+)
+
 ACTION_EXPORT_COPY = "复制 Sequential 源码"
 ACTION_EXPORT_SAVE = "导出 Sequential 为 .py…"
 

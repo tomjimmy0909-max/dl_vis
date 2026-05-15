@@ -26,6 +26,7 @@ class _Layer:
 
 
 def _extends_nn_module(class_node: ast.ClassDef) -> bool:
+    """检查 AST 类节点是否继承 nn.Module（支持 ``nn.Module`` 和 ``Module`` 两种写法）。"""
     for b in class_node.bases:
         if isinstance(b, ast.Attribute) and b.attr == "Module":
             return True
@@ -35,6 +36,7 @@ def _extends_nn_module(class_node: ast.ClassDef) -> bool:
 
 
 def _int_from_ast(node: ast.expr | None) -> int | None:
+    """从 AST 节点尝试提取整数值。支持负数、乘法、加法表达式。"""
     if node is None:
         return None
     if isinstance(node, ast.Constant) and isinstance(node.value, int):
@@ -56,6 +58,7 @@ def _int_from_ast(node: ast.expr | None) -> int | None:
 
 
 def _float_from_ast(node: ast.expr | None) -> float | None:
+    """从 AST 节点尝试提取浮点数值。"""
     if node is None:
         return None
     if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
@@ -64,6 +67,7 @@ def _float_from_ast(node: ast.expr | None) -> float | None:
 
 
 def _bool_from_ast(node: ast.expr | None) -> bool | None:
+    """从 AST 节点尝试提取布尔值。"""
     if node is None:
         return None
     if isinstance(node, ast.Constant) and isinstance(node.value, bool):
@@ -72,6 +76,7 @@ def _bool_from_ast(node: ast.expr | None) -> bool | None:
 
 
 def _call_base_name(call: ast.Call) -> str | None:
+    """提取函数调用名（如 nn.Conv2d → "Conv2d", torch.randn → "randn"）。"""
     fn = call.func
     if isinstance(fn, ast.Attribute):
         return fn.attr
@@ -81,6 +86,7 @@ def _call_base_name(call: ast.Call) -> str | None:
 
 
 def _kw_dict(call: ast.Call) -> dict[str, ast.expr]:
+    """提取函数调用的关键字参数字典（排除 None key）。"""
     return {k.arg: k.value for k in call.keywords if k.arg is not None}
 
 

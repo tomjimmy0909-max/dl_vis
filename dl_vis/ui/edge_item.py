@@ -13,30 +13,39 @@ if TYPE_CHECKING:
 
 
 class EdgeItem(QGraphicsPathItem):
+    """节点之间的连线图形项，使用三次贝塞尔曲线绘制。
+
+    连线自动根据源/目标节点位置刷新曲线路径，选中时高亮为蓝色。
+    """
+
     def __init__(self, edge_id: str, src_id: str, dst_id: str) -> None:
         super().__init__()
         self.edge_id = edge_id
         self.src_id = src_id
         self.dst_id = dst_id
         self.setFlag(QGraphicsPathItem.GraphicsItemFlag.ItemIsSelectable, True)
-        self.setZValue(-1)
+        self.setZValue(-1)  # 连线在节点下方绘制
+        # 普通状态和选中状态的画笔样式
         self._pen_normal = QPen(QColor(90, 90, 90), 2, Qt.PenStyle.SolidLine)
         self._pen_sel = QPen(QColor(0, 120, 215), 3, Qt.PenStyle.SolidLine)
         self.setPen(self._pen_normal)
 
     def itemChange(self, change, value):
+        """选中状态变化时切换画笔颜色。"""
         result = super().itemChange(change, value)
         if change == QGraphicsPathItem.GraphicsItemChange.ItemSelectedHasChanged:
             self.setPen(self._pen_sel if self.isSelected() else self._pen_normal)
         return result
 
     def refresh_geometry(self, src_item: NodeItem | None, dst_item: NodeItem | None) -> None:
+        """根据源/目标节点位置重新计算贝塞尔曲线路径。"""
         self.prepareGeometryChange()
         if src_item is None or dst_item is None:
-            self.setPath(QPainterPath())
+            self.setPath(QPainterPath())  # 节点不存在时清空路径
             return
         p0 = src_item.output_port_scene_center()
         p3 = dst_item.input_port_scene_center()
+        # 三次贝塞尔曲线：控制点水平偏移使曲线平滑
         path = QPainterPath(p0)
         dx = max(40.0, abs(p3.x() - p0.x()) * 0.5)
         c1 = QPointF(p0.x() + dx, p0.y())

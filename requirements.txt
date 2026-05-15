@@ -2,3 +2,7 @@ pyqt6>=6.5.0
 torch>=2.0.0
 numpy>=1.24.0
 matplotlib>=3.7.0
+# 多模态数据面板（可选但强烈推荐）:
+pillow>=9.0.0
+opencv-python-headless>=4.8.0
+# torchaudio  # 非 WAV 音频时可安装

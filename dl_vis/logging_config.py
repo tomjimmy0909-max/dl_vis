@@ -14,7 +14,14 @@ _LOG_MARK = "_dl_vis_logging_configured"
 
 
 def setup_logging(level: int | None = None) -> None:
+    """
+    初始化日志系统。
+
+    日志级别可通过 DL_VIS_LOG_LEVEL 环境变量设置（默认 INFO）。
+    若设置 DL_VIS_DEBUG=1 或 DL_VIS_LOG_FILE 环境变量，则同时写入文件日志。
+    """
     root = logging.getLogger()
+    # 防止重复初始化
     if getattr(root, _LOG_MARK, False):
         return
 
@@ -23,8 +30,10 @@ def setup_logging(level: int | None = None) -> None:
         level = getattr(logging, lv_name, logging.INFO)
 
     fmt = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
+    # 默认输出到 stderr
     handlers: list[logging.Handler] = [logging.StreamHandler(sys.stderr)]
 
+    # 如果设定了环境变量，同时将日志写入文件
     log_file = os.environ.get("DL_VIS_LOG_FILE")
     if not log_file and os.environ.get("DL_VIS_DEBUG", "").strip() in ("1", "true", "TRUE", "yes", "YES"):
         log_file = str(Path(tempfile.gettempdir()) / "dl_vis.log")

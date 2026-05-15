@@ -9,6 +9,7 @@ from typing import Literal
 from dl_vis.model.graph_document import GraphDocument, GraphNode
 from dl_vis.model.node_types import NodeType
 
+# 训练数据来源模式：图片文件夹 / CSV 表格 / 一对 .npy 文件
 GraphTrainMode = Literal["image_folder", "csv", "npy_pair"]
 
 
@@ -16,16 +17,18 @@ GraphTrainMode = Literal["image_folder", "csv", "npy_pair"]
 class GraphLinkedTraining:
     """单条从画布解析出的训练数据规格。"""
 
-    mode: GraphTrainMode
-    primary: str
-    secondary: str = ""
-    csv_skip_header: bool = False
+    mode: GraphTrainMode          # 数据模式
+    primary: str                  # 主路径（X 文件或文件夹路径）
+    secondary: str = ""           # 次路径（y 文件，仅 npy_pair 模式）
+    csv_skip_header: bool = False  # CSV 是否跳过首行（表头）
 
 
 def _dataset_path_and_kind(n: GraphNode) -> tuple[str, str]:
+    """提取节点中的路径字符串和类型（file/folder），若路径在磁盘上存在则自动检测类型。"""
     p = str(n.params.get("path", "")).strip()
     kind = str(n.params.get("path_kind", "file")).strip().lower()
     path_obj = Path(p) if p else None
+    # 若路径存在，根据实际目录/文件覆盖 path_kind
     if path_obj is not None and p and path_obj.exists():
         kind = "folder" if path_obj.is_dir() else "file"
     return p, kind
@@ -35,10 +38,11 @@ def datasets_feeding_input(doc: GraphDocument) -> list[GraphNode]:
     """所有存在边 Dataset → Input 的数据集节点（去重、顺序稳定）。"""
     inputs = [n for n in doc.iter_nodes() if n.type == NodeType.INPUT.value]
     if len(inputs) != 1:
-        return []
+        return []          # 要求图中恰好一个 Input 节点
     inp_id = inputs[0].id
     seen: set[str] = set()
     out: list[GraphNode] = []
+    # 遍历所有边，找出指向 Input 的数据集节点
     for e in sorted(doc.edges.values(), key=lambda x: (x.src_id, x.dst_id)):
         if e.dst_id != inp_id:
             continue
@@ -71,12 +75,14 @@ def parse_graph_linked_training(doc: GraphDocument) -> GraphLinkedTraining | Non
     if not specs:
         return None
 
+    # 优先检测双 .npy 模式（至少两个数据集节点指向 Input）
     if len(specs) >= 2:
         npy_specs = [t for t in specs if t[0].lower().endswith(".npy")]
         if len(npy_specs) >= 2:
             paths = sorted(t[0] for t in npy_specs)
             return GraphLinkedTraining(mode="npy_pair", primary=paths[0], secondary=paths[1])
 
+    # 单节点模式：按类型判定
     p, kind, _n = specs[0]
     path_obj = Path(p)
     if kind == "folder" or path_obj.is_dir():
@@ -88,14 +94,14 @@ def parse_graph_linked_training(doc: GraphDocument) -> GraphLinkedTraining | Non
             mode="csv", primary=str(path_obj.resolve()), csv_skip_header=skip
         )
     if p.lower().endswith(".npy"):
-        return None
+        return None          # 单 .npy 无法区分 X 和 y
     return None
 
 
 def describe_graph_training_hint(doc: GraphDocument) -> str:
     """用于 UI 提示：当前图上训练数据为何不可用。"""
     if parse_graph_linked_training(doc) is not None:
-        return ""
+        return ""            # 已有合法配置，无需提示
     nodes = datasets_feeding_input(doc)
     if not nodes:
         return "请添加「训练数据集」节点，并连接：**数据集出口 → 输入层入口**。"

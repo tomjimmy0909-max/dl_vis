@@ -112,6 +112,27 @@ def code_preview_for_node(node: GraphNode) -> str:
     if t == NodeType.MULTIPLY.value:
         return hdr + "torch.mul(x1, x2)  # 或 x1 * x2；两路输入形状须一致"
 
+    if t == NodeType.HIST_EQUALIZE.value:
+        return (
+            hdr
+            + "# NCHW 形状不变；运行时用 logic.dataproc.image_prep.chw_uint8_to_tensor_prep(..., use_hist_equalize=True)"
+        )
+
+    if t == NodeType.MEL_SPECTROGRAM.value:
+        return (
+            hdr
+            + "# 输出形状 (N,1,n_mels,mel_width)；运行时用 logic.dataproc.mel_spectrogram 按节点参数构造 STFT/梅尔\n"
+            f"# n_mels={int(p.get('n_mels', 64))}, mel_width={int(p.get('mel_width', 224))}\n"
+            f"# n_fft={int(p.get('n_fft', 1024))}, hop_length={int(p.get('hop_length', 256))}, sr={int(p.get('audio_sample_rate', 16000))}"
+        )
+
+    if t == NodeType.VIDEO_FRAME_PACK.value:
+        return (
+            hdr
+            + "# 输出 (N,3×max_frames,out_h,out_w)；运行时用 logic.dataproc.video_frames.video_clip_to_nchw\n"
+            f"# max_frames={int(p.get('max_frames', 8))}, out_height={int(p.get('out_height', 224))}, out_width={int(p.get('out_width', 224))}"
+        )
+
     if t == NodeType.CONCAT.value:
         d = int(p.get("concat_dim", 1))
         return hdr + f"torch.cat([tensors...], dim={d})  # NCHW 下 dim=1 为沿通道拼接"

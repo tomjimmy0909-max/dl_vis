@@ -30,12 +30,21 @@ def export_to_torch_module(document: GraphDocument, *, skip_trailing_softmax: bo
 
 
 def linear_chain_order(doc: GraphDocument) -> list[str]:
-    """验证「计算子图」为一条覆盖全部非 Dataset 节点的有向路径；返回该序列。"""
+    """验证「计算子图」为一条覆盖全部非 Dataset 节点的有向路径；返回该序列。
+
+    条件：
+    1. 所有计算节点构成一条单一路径（无分支、无汇合）
+    2. 恰好一个入度为 0 的起点（通常为 Input）
+    3. 无环、无孤立节点
+    4. 边数恰好为 节点数 - 1
+    """
+    # 排除 Dataset 节点，仅考虑计算节点
     ds = {nid for nid, n in doc.nodes.items() if n.type == NodeType.DATASET.value}
     nodes = set(doc.nodes.keys()) - ds
     if len(nodes) == 0:
         raise ValueError("图为空（或仅含数据集节点），无法导出。")
     indeg: dict[str, int] = defaultdict(int)
+    # succ/pred 记录每个节点的唯一后继/前驱（线性链要求每个节点最多一个）
     succ: dict[str, str | None] = {nid: None for nid in nodes}
     pred: dict[str, str | None] = {nid: None for nid in nodes}
     for e in doc.edges.values():
@@ -51,10 +60,12 @@ def linear_chain_order(doc: GraphDocument) -> list[str]:
             raise ValueError("存在合并（一个节点有多条入边），Sequential 无法表达。")
         pred[e.dst_id] = e.src_id
 
+    # 找到起点（入度为 0 的唯一节点）
     roots = [nid for nid in nodes if indeg[nid] == 0]
     if len(roots) != 1:
         raise ValueError("线性链要求恰好一个入度为 0 的起点（通常为 Input）。")
     cur = roots[0]
+    # 沿 succ 链遍历，构造拓扑序列
     order: list[str] = []
     seen: set[str] = set()
     while cur is not None:
@@ -63,8 +74,10 @@ def linear_chain_order(doc: GraphDocument) -> list[str]:
         seen.add(cur)
         order.append(cur)
         cur = succ[cur]
+    # 校验：必须覆盖所有计算节点
     if len(order) != len(nodes):
         raise ValueError("图不是覆盖全部计算节点的单一路径（可能存在孤立点或多分量）。")
+    # 校验：计算边数必须等于 节点数 - 1（路径长度）
     n_compute_edges = sum(
         1
         for e in doc.edges.values()
@@ -95,8 +108,8 @@ def export_sequential_source(
 ) -> str:
     """生成可执行的 Python 源码字符串：``import torch.nn`` + ``module_var = nn.Sequential(...)``。"""
     order = linear_chain_order(doc)
-    layers: list[str] = []
-    spatial = True  # 是否在卷积特征图上（需 Flatten 再 Linear）
+    layers: list[str] = []  # 收集每层对应的 nn.* 代码行
+    spatial = True  # 标记当前是否在卷积特征图空间上（若为 True 且遇到 FC，需先插入 Flatten）
 
     for i, nid in enumerate(order):
         n = doc.get_node(nid)
@@ -105,12 +118,20 @@ def export_sequential_source(
         t = n.type
         p = copy.deepcopy(n.params)
 
+        # 跳过非计算节点：Input/Output/Dataset 不生成层代码
         if t == NodeType.INPUT.value:
             continue
         if t == NodeType.OUTPUT.value:
             continue
         if t == NodeType.DATASET.value:
             continue
+        if t in (
+            NodeType.HIST_EQUALIZE.value,
+            NodeType.MEL_SPECTROGRAM.value,
+            NodeType.VIDEO_FRAME_PACK.value,
+        ):
+            continue
+        # 不支持导出为 Sequential 的复杂节点
         if t in (
             NodeType.RESIDUAL.value,
             NodeType.PRUNE.value,
@@ -121,6 +142,7 @@ def export_sequential_source(
         ):
             raise ValueError(f"节点类型「{t}」当前不支持导出为 Sequential。")
 
+        # 可选：跳过链尾紧邻 Output 的 Softmax（避免与 CrossEntropyLoss 冲突）
         if (
             skip_trailing_softmax
             and t == NodeType.SOFTMAX.value
@@ -128,7 +150,9 @@ def export_sequential_source(
         ):
             continue
 
+        # 根据节点类型生成不同的 nn.* 代码
         if t == NodeType.CONV3X3.value:
+            # Conv2d(kernel_size=3)
             ic = int(p["in_channels"])
             oc = int(p["out_channels"])
             s = int(p.get("stride", 1))
@@ -137,6 +161,7 @@ def export_sequential_source(
             layers.append(f"nn.Conv2d({ic}, {oc}, kernel_size=3, stride={s}, padding={pad}, bias={_repr_bool(bias)})")
             spatial = True
         elif t == NodeType.CONV1X1.value:
+            # Conv2d(kernel_size=1)
             ic = int(p["in_channels"])
             oc = int(p["out_channels"])
             s = int(p.get("stride", 1))
@@ -157,6 +182,7 @@ def export_sequential_source(
             layers.append(f"nn.AvgPool2d(kernel_size={ks}, stride={st}, padding={pad})")
             spatial = True
         elif t == NodeType.FC.value:
+            # 若前面是卷积/池化（spatial=True），先 Flatten 再 Linear
             inf = int(p["in_features"])
             outf = int(p["out_features"])
             bias = bool(p.get("bias", True))
@@ -187,6 +213,7 @@ def export_sequential_source(
     if not layers:
         raise ValueError("没有可导出的计算层（是否仅有 Input/Output？）。")
 
+    # 拼接所有层代码，生成完整的 Sequential 定义
     joined = ",\n    ".join(layers)
     return (
         "import torch\n"

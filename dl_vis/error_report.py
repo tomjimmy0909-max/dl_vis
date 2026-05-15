@@ -1,4 +1,8 @@
-"""结构化异常报告：固定 Schema、落盘路径，便于自动化采集与 AI 解析。"""
+"""结构化异常报告：固定 Schema、落盘路径，便于自动化采集与 AI 解析。
+
+当程序发生未捕获异常时，将异常的详细信息（类型、消息、堆栈、运行环境）
+以 JSON 格式写入临时目录中的错误报告文件，方便后续排查。
+"""
 
 from __future__ import annotations
 
@@ -12,11 +16,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-ERROR_REPORT_FORMAT = "dl_vis.error_report/v1"
-ENV_REPORT_DIR = "DL_VIS_ERROR_REPORT_DIR"
+ERROR_REPORT_FORMAT = "dl_vis.error_report/v1"  # 报告格式版本
+ENV_REPORT_DIR = "DL_VIS_ERROR_REPORT_DIR"       # 可通过环境变量自定义报告目录
 
 
 def report_dir() -> Path:
+    """获取错误报告目录（可被环境变量 DL_VIS_ERROR_REPORT_DIR 覆盖）。"""
     raw = os.environ.get(ENV_REPORT_DIR, "").strip()
     if raw:
         return Path(raw).expanduser()
@@ -24,14 +29,17 @@ def report_dir() -> Path:
 
 
 def last_error_path() -> Path:
+    """最新一次错误报告的 JSON 文件路径（覆盖写入）。"""
     return report_dir() / "dl_vis_last_error.json"
 
 
 def error_events_path() -> Path:
+    """所有历史错误事件追加到 JSONL 文件。"""
     return report_dir() / "dl_vis_error_events.jsonl"
 
 
 def _optional_versions() -> dict[str, str]:
+    """获取可选运行时的版本信息（Qt、PyTorch 等）。"""
     out: dict[str, str] = {}
     try:
         from PyQt6.QtCore import qVersion
@@ -49,6 +57,7 @@ def _optional_versions() -> dict[str, str]:
 
 
 def build_context(*, extra: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """构建错误报告的上下文信息（版本、平台、当前工作目录等）。"""
     ctx: dict[str, Any] = {
         "dl_vis_version": _package_version(),
         "python": sys.version.split()[0],
@@ -63,6 +72,7 @@ def build_context(*, extra: Mapping[str, Any] | None = None) -> dict[str, Any]:
 
 
 def _package_version() -> str:
+    """读取 dl_vis 包的版本号。"""
     try:
         from dl_vis import __version__
 
@@ -79,6 +89,7 @@ def build_report(
     source: str,
     context_extra: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """构造完整的错误报告字典（JSON 兼容）。"""
     et = exc_type.__name__ if exc_type is not None else "NoneType"
     msg = str(exc) if exc is not None else ""
     tb_text = ""

@@ -76,6 +76,7 @@ class VizTab(QWidget):
             self._show_error_axes(f"刷新失败：{e}")
 
     def _refresh_from_main_impl(self) -> None:
+        """实际刷新逻辑：获取当前画布选中节点的数值参数，绘制条形图。"""
         _configure_matplotlib_cjk_font()
         self._figure.clear()
         ax = self._figure.add_subplot(111)
@@ -92,6 +93,7 @@ class VizTab(QWidget):
             self._draw_idle_safe()
             return
 
+        # 获取画布中选中的第一个节点
         sel = [it for it in c.scene().selectedItems() if isinstance(it, NodeItem)]
         if not sel:
             self._hint.setText("提示：在「图形编辑」画布中选中一个节点以查看其数值参数分布。")
@@ -105,6 +107,7 @@ class VizTab(QWidget):
             self._draw_idle_safe()
             return
 
+        # 提取节点中所有数值型参数（int/float/bool）
         self._hint.setText(f"当前节点：{node.type}（显示数值型 params）")
         pairs: list[tuple[str, float]] = []
         for k, v in node.params.items():
@@ -118,6 +121,7 @@ class VizTab(QWidget):
             self._draw_idle_safe()
             return
 
+        # 按参数名排序并绘制条形图
         pairs.sort(key=lambda x: x[0])
         labels = [p[0] for p in pairs]
         vals = [p[1] for p in pairs]

@@ -25,6 +25,9 @@ class NodeType(str, Enum):
     ADD = "Add"
     CONCAT = "Concat"
     MULTIPLY = "Multiply"
+    HIST_EQUALIZE = "HistEqualize"
+    MEL_SPECTROGRAM = "MelSpectrogram"
+    VIDEO_FRAME_PACK = "VideoFramePack"
     # 占位：仅 UI + 默认参数
     RESIDUAL = "Residual"
     PRUNE = "Prune"
@@ -52,6 +55,20 @@ DEFAULT_PARAMS: dict[str, dict[str, Any]] = {
         "path_kind": "file",
         "role": "unspecified",
         "csv_skip_header": False,
+    },
+    NodeType.HIST_EQUALIZE.value: {},
+    NodeType.MEL_SPECTROGRAM.value: {
+        "n_mels": 64,
+        "mel_width": 224,
+        "n_fft": 1024,
+        "hop_length": 256,
+        "audio_sample_rate": 16000,
+    },
+    NodeType.VIDEO_FRAME_PACK.value: {
+        "max_frames": 8,
+        "out_height": 224,
+        "out_width": 224,
+        "bad_frame_var_threshold": 1e-5,
     },
     NodeType.CONV3X3.value: {
         "in_channels": 3,
@@ -141,6 +158,20 @@ EDITABLE_FIELDS: dict[str, list[EditableFieldSpec]] = {
         ),
         ("csv_skip_header", "bool"),
     ],
+    NodeType.HIST_EQUALIZE.value: [],
+    NodeType.MEL_SPECTROGRAM.value: [
+        ("n_mels", "int"),
+        ("mel_width", "int"),
+        ("n_fft", "int"),
+        ("hop_length", "int"),
+        ("audio_sample_rate", "int"),
+    ],
+    NodeType.VIDEO_FRAME_PACK.value: [
+        ("max_frames", "int"),
+        ("out_height", "int"),
+        ("out_width", "int"),
+        ("bad_frame_var_threshold", "float"),
+    ],
     NodeType.CONV3X3.value: [
         ("in_channels", "int"),
         ("out_channels", "int"),
@@ -212,9 +243,27 @@ def default_params_for_type(node_type: str) -> dict[str, Any]:
     return dict(base)
 
 
+PREPROC_PALETTE_ORDER: tuple[str, ...] = (
+    NodeType.HIST_EQUALIZE.value,
+    NodeType.MEL_SPECTROGRAM.value,
+    NodeType.VIDEO_FRAME_PACK.value,
+)
+PREPROC_PALETTE_TYPES: frozenset[str] = frozenset(PREPROC_PALETTE_ORDER)
+
+
+def preproc_palette_types() -> list[str]:
+    """「数据与预处理」侧栏可拖拽的节点类型（顺序固定）。"""
+    return list(PREPROC_PALETTE_ORDER)
+
+
+def is_preproc_palette_type(node_type: str) -> bool:
+    return node_type in PREPROC_PALETTE_TYPES
+
+
 def palette_types() -> list[str]:
-    """调色板显示顺序（全部算子类型；Dataset 仅在「训练素材」侧栏）。"""
-    return [m.value for m in NodeType if m != NodeType.DATASET]
+    """主「算子」调色板：排除 Dataset 与预处理专用节点。"""
+    skip = {NodeType.DATASET.value, *PREPROC_PALETTE_TYPES}
+    return [m.value for m in NodeType if m.value not in skip]
 
 
 def is_known_type(node_type: str) -> bool:
@@ -340,6 +389,30 @@ NODE_PALETTE_ZH: dict[str, tuple[str, str]] = {
         "【作用】多路同形状逐元素相乘。\n"
         "【维度】所有输入 N、C、H、W 须一致。",
     ),
+    NodeType.HIST_EQUALIZE.value: (
+        "直方图均衡",
+        "【类型标识】HistEqualize\n"
+        "【作用】声明对图像特征做直方图均衡（与 logic.dataproc.image_prep 一致）。\n"
+        "【维度】NCHW 不变。\n"
+        "【连接】单入单出。\n"
+        "【导出】不参与 nn.Sequential；运行时在数据管线中调用等价变换。",
+    ),
+    NodeType.MEL_SPECTROGRAM.value: (
+        "梅尔频谱",
+        "【类型标识】MelSpectrogram\n"
+        "【作用】波形→对数梅尔谱，输出视作单通道伪图像 (N,1,n_mels,mel_width)。\n"
+        "【参数】n_mels / mel_width / n_fft / hop_length / audio_sample_rate。\n"
+        "【连接】单入单出；首层 Conv 的 in_channels 应为 1。\n"
+        "【导出】不参与 nn.Sequential；见 logic.dataproc.mel_spectrogram。",
+    ),
+    NodeType.VIDEO_FRAME_PACK.value: (
+        "视频抽帧堆叠",
+        "【类型标识】VideoFramePack\n"
+        "【作用】多帧 RGB 预处理后沿通道拼接，(N, 3×max_frames, out_height, out_width)。\n"
+        "【参数】max_frames / out_height / out_width / bad_frame_var_threshold。\n"
+        "【连接】单入单出；首层 Conv in_channels = 3×max_frames。\n"
+        "【导出】不参与 nn.Sequential；见 logic.dataproc.video_frames。",
+    ),
     NodeType.RESIDUAL.value: (
         "残差（占位）",
         "【类型标识】Residual\n"
@@ -402,6 +475,15 @@ PARAM_LABEL_ZH: dict[str, str] = {
     "path_kind": "路径类型（file/folder，自动）",
     "role": "与模型的关联（说明）",
     "csv_skip_header": "CSV 首行作表头（跳过）",
+    "mel_width": "梅尔时间维宽度 W",
+    "n_mels": "梅尔频带数（输出高度 H）",
+    "n_fft": "STFT n_fft",
+    "hop_length": "STFT hop",
+    "audio_sample_rate": "音频采样率",
+    "max_frames": "堆叠帧数（输出通道=3×帧数）",
+    "out_height": "输出高度 H",
+    "out_width": "输出宽度 W",
+    "bad_frame_var_threshold": "坏帧方差阈值",
 }
 
 

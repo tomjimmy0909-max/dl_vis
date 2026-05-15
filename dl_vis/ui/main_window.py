@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QAction, QFont, QKeySequence, QShortcut
+from PyQt6.QtGui import QAction, QCursor, QFont, QGuiApplication, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -48,6 +48,7 @@ from dl_vis.logic.shape_inference import export_sequential_prerequisite_message,
 from dl_vis.model.graph_document import GraphDocument, GraphNode
 from dl_vis.model.node_types import EDITABLE_FIELDS, param_label_zh
 from dl_vis.ui.canvas_widget import CanvasWidget
+from dl_vis.ui.data_proc_panel import DataProcPanel
 from dl_vis.ui import locale_zh as ZH
 from dl_vis.ui.materials_panel import MaterialsPanel
 from dl_vis.ui.node_item import NodeItem
@@ -84,19 +85,32 @@ if __name__ == "__main__":
     print(y.shape)
 '''
 class MainWindow(QMainWindow):
+    """
+    dl_vis 主窗口。
+
+    布局：
+    - 中央：图形编辑 Tab（画布）+ 可视化 Tab
+    - 左侧 Dock：算子调色板 + 训练素材面板
+    - 右侧 Dock：参数表单 + 代码预览/编辑
+
+    功能入口：
+    - 菜单栏：开始、文件、编辑、视图、工具、运行、导出
+    """
+
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(ZH.APP_TITLE_BASE)
         self.resize(1280, 780)
-        self._dirty = False
-        self._workspace_root: Path | None = None
+        self._dirty = False          # 文档是否被修改（标题栏显示 *）
+        self._workspace_root: Path | None = None  # 当前工作目录
 
+        # === 中央区域：画布 Tab + 可视化 Tab ===
         self._canvas_tabs = QTabWidget()
         self._canvas_tabs.setTabsClosable(True)
         self._canvas_tabs.tabCloseRequested.connect(self._close_tab)
         self._canvas_tabs.currentChanged.connect(self._on_canvas_tab_changed)
 
-        self._viz_tab = VizTab(self)
+        self._viz_tab = VizTab(self)  # 可视化 Tab（Matplotlib 参数条形图）
 
         self._central_tabs = QTabWidget()
         self._central_tabs.addTab(self._canvas_tabs, ZH.TAB_EDITOR)
@@ -108,26 +122,30 @@ class MainWindow(QMainWindow):
         cl.addWidget(self._central_tabs)
         self.setCentralWidget(central)
 
+        # === 左侧 Dock：算子调色板 + 训练素材 ===
         self._palette_dock = QDockWidget(ZH.DOCK_PALETTE, self)
         self._palette = PaletteList()
         self._materials_panel = MaterialsPanel()
+        self._data_proc_panel = DataProcPanel(self)
         self._left_panel_tabs = QTabWidget()
         self._left_panel_tabs.addTab(self._palette, ZH.TAB_PALETTE_NODES)
         self._left_panel_tabs.addTab(self._materials_panel, ZH.TAB_MATERIALS)
+        self._left_panel_tabs.addTab(self._data_proc_panel, ZH.TAB_DATA_PROC)
         self._palette_dock.setWidget(self._left_panel_tabs)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._palette_dock)
 
+        # === 右侧 Dock：参数表单 + 代码预览/编辑 ===
         self._props_container = QWidget()
         props_outer = QVBoxLayout(self._props_container)
         props_outer.setContentsMargins(0, 0, 0, 0)
         form_host = QWidget()
-        self._props_layout = QFormLayout(form_host)
+        self._props_layout = QFormLayout(form_host)  # 动态生成的参数表单
         props_outer.addWidget(form_host)
         props_outer.addWidget(QLabel(ZH.PROP_CODE_PREVIEW_HEAD))
         self._code_hint = QLabel(ZH.PROP_CODE_HINT_NONE)
         self._code_hint.setWordWrap(True)
         props_outer.addWidget(self._code_hint)
-        self._code_preview = QPlainTextEdit()
+        self._code_preview = QPlainTextEdit()  # 代码预览/编辑区
         self._code_preview.setReadOnly(True)
         self._code_preview.setPlaceholderText(ZH.PROP_CODE_PREVIEW_PLACEHOLDER)
         mono = QFont("Consolas")
@@ -135,10 +153,11 @@ class MainWindow(QMainWindow):
         self._code_preview.setFont(mono)
         self._code_preview.setMinimumHeight(140)
         props_outer.addWidget(self._code_preview, 1)
-        self._btn_apply_code = QPushButton(ZH.ACTION_APPLY_CODE)
+        self._btn_apply_code = QPushButton(ZH.ACTION_APPLY_CODE)  # 「应用代码」按钮
         self._btn_apply_code.setEnabled(False)
         self._btn_apply_code.clicked.connect(self._apply_code_from_preview)
         props_outer.addWidget(self._btn_apply_code)
+        # 快捷键 Ctrl+Enter 提交代码
         sc_apply = QShortcut(QKeySequence("Ctrl+Return"), self._code_preview)
         sc_apply.setContext(Qt.ShortcutContext.WidgetShortcut)
         sc_apply.activated.connect(self._apply_code_from_preview)
@@ -150,6 +169,7 @@ class MainWindow(QMainWindow):
         self._props_dock.setWidget(self._props_scroll)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._props_dock)
 
+        # Dock 特性：可移动、可浮动、可关闭
         _dock_feats = (
             QDockWidget.DockWidgetFeature.DockWidgetMovable
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
@@ -158,17 +178,63 @@ class MainWindow(QMainWindow):
         self._palette_dock.setFeatures(_dock_feats)
         self._props_dock.setFeatures(_dock_feats)
 
+        # 状态栏
         self._status = QLabel("")
         self.statusBar().addWidget(self._status, 1)
 
-        self._props_node_id: str | None = None
-        self._props_loading = False
-        self._train_worker: TrainingWorker | None = None
+        # 参数面板状态
+        self._props_node_id: str | None = None  # 当前正在编辑的节点 ID
+        self._props_loading = False              # 参数面板正在加载中（避免信号循环）
+        self._train_worker: TrainingWorker | None = None  # 后台训练线程
 
+        # 构建菜单栏并创建第一个画布 Tab
         self._build_menu()
         self._new_tab(ZH.TAB_CANVAS_N.format(1))
         self._mark_clean()
         self._update_start_actions_enabled()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        # 部分终端/多显示器 + DPI 下，首次 show 立刻 move 时 frameGeometry 不稳定，易把标题栏移出工作区
+        # （看起来整屏的内容、看不到最大化/关闭）。延后一帧再居中并夹在工作区内。
+        if getattr(self, "_dl_vis_did_center_window", False):
+            return
+        self._dl_vis_did_center_window = True
+        QTimer.singleShot(0, self._place_window_in_work_area)
+
+    def _place_window_in_work_area(self) -> None:
+        center_hint = self.frameGeometry().center()
+        screen = (
+            QGuiApplication.screenAt(center_hint)
+            or QGuiApplication.screenAt(QCursor.pos())
+            or self.screen()
+            or QGuiApplication.primaryScreen()
+        )
+        if screen is None:
+            return
+        ag = screen.availableGeometry()
+        inner = self.geometry()
+        frame = self.frameGeometry()
+        dx = frame.width() - inner.width()
+        dy = frame.height() - inner.height()
+        max_inner_w = max(400, ag.width() - dx)
+        max_inner_h = max(300, ag.height() - dy)
+        if inner.width() > max_inner_w or inner.height() > max_inner_h:
+            self.resize(
+                min(inner.width(), max_inner_w),
+                min(inner.height(), max_inner_h),
+            )
+        fg = self.frameGeometry()
+        fg.moveCenter(ag.center())
+        if fg.left() < ag.left():
+            fg.moveLeft(ag.left())
+        if fg.top() < ag.top():
+            fg.moveTop(ag.top())
+        if fg.right() > ag.right():
+            fg.moveLeft(ag.right() - fg.width())
+        if fg.bottom() > ag.bottom():
+            fg.moveTop(ag.bottom() - fg.height())
+        self.move(fg.topLeft())
 
     def _current_canvas(self) -> CanvasWidget | None:
         w = self._canvas_tabs.currentWidget()
@@ -188,7 +254,21 @@ class MainWindow(QMainWindow):
             self._status.setText("可视化刷新失败，详见控制台/stderr 日志。")
 
     def _build_menu(self) -> None:
+        """
+        构建完整菜单栏。
+
+        菜单结构：
+        - 开始：打开 .py / 文件夹 / 创建模板 / 解析为流程图
+        - 文件：新建 Tab / 打开 JSON / 保存 JSON / 复制节点
+        - 编辑：撤销 / 重做 / 左对齐 / 顶对齐
+        - 视图：重置停靠面板
+        - 工具：形状推导
+        - 运行：试跑前向 / 合成数据训练
+        - 导出：帮助 / 复制 Sequential 源码 / 保存为 .py
+        """
         mb = self.menuBar()
+
+        # === 「开始」菜单：与外部文件交互 ===
         start_menu = mb.addMenu(ZH.MENU_START)
         act_open_py = QAction(ZH.ACTION_START_OPEN_PY, self)
         act_open_py.triggered.connect(self._start_open_py_file)
@@ -205,6 +285,7 @@ class MainWindow(QMainWindow):
         self._act_parse_script.setEnabled(False)
         start_menu.addAction(self._act_parse_script)
 
+        # === 「文件」菜单：画布文档管理 ===
         file_menu = mb.addMenu(ZH.MENU_FILE)
 
         act_new_page = QAction(ZH.ACTION_NEW_TAB, self)
@@ -227,6 +308,7 @@ class MainWindow(QMainWindow):
         act_dup.triggered.connect(self._duplicate_selected)
         file_menu.addAction(act_dup)
 
+        # === 「编辑」菜单：撤销/重做/对齐 ===
         edit_menu = mb.addMenu(ZH.MENU_EDIT)
 
         self._act_undo = QAction(ZH.ACTION_UNDO, self)
@@ -251,16 +333,19 @@ class MainWindow(QMainWindow):
         act_align_top.triggered.connect(lambda: self._align_nodes("top"))
         edit_menu.addAction(act_align_top)
 
+        # === 「视图」菜单 ===
         view_menu = mb.addMenu(ZH.MENU_VIEW)
         act_reset_docks = QAction(ZH.ACTION_RESET_DOCKS, self)
         act_reset_docks.triggered.connect(self._reset_dock_layout)
         view_menu.addAction(act_reset_docks)
 
+        # === 「工具」菜单 ===
         tool_menu = mb.addMenu(ZH.MENU_TOOL)
         act_shape = QAction(ZH.ACTION_SHAPE_INFER, self)
         act_shape.triggered.connect(self._run_shape_inference)
         tool_menu.addAction(act_shape)
 
+        # === 「运行」菜单：前向试跑和训练 ===
         run_menu = mb.addMenu(ZH.MENU_RUN)
         act_fwd = QAction(ZH.ACTION_DUMMY_FORWARD, self)
         act_fwd.triggered.connect(self._run_dummy_forward)
@@ -269,6 +354,7 @@ class MainWindow(QMainWindow):
         act_train.triggered.connect(self._open_train_dialog)
         run_menu.addAction(act_train)
 
+        # === 「导出」菜单：PyTorch 代码生成 ===
         export_menu = mb.addMenu(ZH.MENU_EXPORT)
 
         act_export_help = QAction(ZH.ACTION_EXPORT_TORCH, self)
@@ -515,6 +601,13 @@ class MainWindow(QMainWindow):
         self._code_hint.setText(ZH.PROP_CODE_HINT_EDITABLE if ok else ZH.PROP_CODE_HINT_VIEWONLY)
 
     def _fill_props_form(self, node: GraphNode | None) -> None:
+        """
+        填充右侧参数面板表单。
+
+        根据节点类型从 EDITABLE_FIELDS 获取可编辑字段定义，
+        动态生成对应类型的 Qt 控件（QSpinBox / QDoubleSpinBox / QCheckBox / QLineEdit / QComboBox），
+        并绑定值变化时的回调。
+        """
         self._clear_props_form()
         if node is None:
             self._props_layout.addRow(QLabel(ZH.PROP_SELECT_NODE))
@@ -522,12 +615,13 @@ class MainWindow(QMainWindow):
         self._props_node_id = node.id
         fields = EDITABLE_FIELDS.get(node.type, [])
         if not fields:
+            # 该类型无可编辑字段（如 Sigmoid/Add），仅显示代码预览
             self._props_layout.addRow(QLabel(ZH.PROP_NO_FIELDS))
             self._code_preview.setPlainText(code_preview_for_node(node))
             self._sync_code_panel(node)
             return
 
-        self._props_loading = True
+        self._props_loading = True  # 防止表单加载过程中触发回调
         params = node.params
         for spec in fields:
             if len(spec) == 3:
@@ -536,6 +630,7 @@ class MainWindow(QMainWindow):
                 key, kind = spec  # type: ignore[misc]
                 choices = None
             label = param_label_zh(key)
+            # 根据字段类型创建不同的 Qt 控件
             if kind == "int":
                 w = QSpinBox()
                 w.setRange(-999999999, 999999999)
@@ -578,6 +673,7 @@ class MainWindow(QMainWindow):
                 w.currentTextChanged.connect(lambda t, k=key: self._on_prop_choice_changed(k, t))
                 self._props_layout.addRow(label, w)
         self._props_loading = False
+        # 更新代码预览
         self._code_preview.setPlainText(code_preview_for_node(node))
         self._sync_code_panel(node)
 
@@ -749,10 +845,19 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, ZH.DLG_DUMMY_FORWARD, "\n".join(lines))
 
     def _open_train_dialog(self) -> None:
+        """
+        打开训练对话框。
+
+        用户在对话框中可选择：
+        1. 数据模式（画布数据集 / 合成 / 双 .npy / CSV）
+        2. 训练轮数和学习率
+        3. 开始训练（在后 QTbread 中运行，实时显示损失）
+        """
         c = self._current_canvas()
         if c is None:
             return
         doc = c.graph_document()
+        # 训练前的校验检查
         pre = validate_output_for_train(doc)
         if pre:
             QMessageBox.warning(self, ZH.RUN_TRAIN_FAIL, pre)
@@ -767,10 +872,13 @@ class MainWindow(QMainWindow):
 
         from dl_vis.logic.graph_dataset import parse_graph_linked_training
 
+        # 构建训练对话框 UI
         dlg = QDialog(self)
         dlg.setWindowTitle(ZH.DLG_TRAIN)
         root = QVBoxLayout(dlg)
         form = QFormLayout()
+
+        # 数据模式选择
         mode_combo = QComboBox()
         if parse_graph_linked_training(doc) is not None:
             mode_combo.addItem(ZH.TRAIN_MODE_GRAPH, "graph")
@@ -779,6 +887,7 @@ class MainWindow(QMainWindow):
         mode_combo.addItem(ZH.TRAIN_MODE_CSV, "csv")
         form.addRow(ZH.TRAIN_DATA_MODE, mode_combo)
 
+        # 训练超参
         sp_ep = QSpinBox()
         sp_ep.setRange(1, 100_000)
         sp_ep.setValue(5)
@@ -790,6 +899,7 @@ class MainWindow(QMainWindow):
         sp_lr.setValue(1e-3)
         form.addRow(ZH.TRAIN_LR, sp_lr)
 
+        # 双 .npy 文件选择区域
         ed_x = QLineEdit()
         ed_y = QLineEdit()
         bx = QPushButton("…")
@@ -817,6 +927,7 @@ class MainWindow(QMainWindow):
         npy_widget = QWidget()
         npy_widget.setLayout(row_npy)
 
+        # CSV 文件选择区域
         ed_csv = QLineEdit()
         bc = QPushButton("…")
         chk_hdr = QCheckBox(ZH.TRAIN_CSV_SKIP_HEADER)
@@ -839,16 +950,19 @@ class MainWindow(QMainWindow):
         root.addWidget(npy_widget)
         root.addWidget(csv_widget)
 
+        # 训练说明
         note = QLabel(ZH.TRAIN_SOFTMAX_NOTE)
         note.setWordWrap(True)
         root.addWidget(note)
 
+        # 训练日志显示区域
         log = QTextEdit()
         log.setReadOnly(True)
         log.setMinimumHeight(180)
         root.addWidget(QLabel(ZH.TRAIN_LOG_HEADER))
         root.addWidget(log, 1)
 
+        # 开始训练和关闭按钮
         btn_start = QPushButton(ZH.TRAIN_START)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         bb.rejected.connect(dlg.reject)
@@ -858,6 +972,7 @@ class MainWindow(QMainWindow):
         row_btn.addWidget(bb)
         root.addLayout(row_btn)
 
+        # 同步控件可见性：当模式切换时启用/禁用对应的输入区域
         def sync_mode() -> None:
             m = mode_combo.currentData()
             npy_widget.setEnabled(m == "npy")
@@ -867,12 +982,14 @@ class MainWindow(QMainWindow):
         sync_mode()
 
         def start_train() -> None:
+            """训练按钮点击回调：校验输入 -> 创建 TrainingWorker -> 启动后台线程。"""
             try:
                 import torch  # noqa: F401
             except ImportError:
                 QMessageBox.warning(dlg, ZH.RUN_TORCH_HINT, MSG_TORCH_MISSING)
                 return
             mode = str(mode_combo.currentData())
+            # 根据模式校验必要文件路径
             if mode == "npy":
                 if not ed_x.text().strip() or not ed_y.text().strip():
                     QMessageBox.warning(dlg, ZH.RUN_TRAIN_FAIL, "请选择 X 与 y 的 .npy 文件路径。")
@@ -882,6 +999,7 @@ class MainWindow(QMainWindow):
                     QMessageBox.warning(dlg, ZH.RUN_TRAIN_FAIL, "请选择 CSV 文件路径。")
                     return
             ch, hh, ww = self._input_chw_from_doc(doc)
+            # 构建训练任务配置
             cfg = TrainingJobConfig(
                 epochs=int(sp_ep.value()),
                 lr=float(sp_lr.value()),
@@ -895,13 +1013,16 @@ class MainWindow(QMainWindow):
                 width=ww,
             )
             log.clear()
+            # 创建后台训练线程
             worker = TrainingWorker(doc, cfg, self)
             self._train_worker = worker
 
             def on_ep(ep: int, lv: float) -> None:
+                """每个 epoch 结束的回调：在 UI 日志区追加当前损失。"""
                 log.append(f"epoch {ep}: loss = {lv:.6g}")
 
             def on_ok(losses: object) -> None:
+                """训练成功完成。"""
                 self._train_worker = None
                 worker.deleteLater()
                 btn_start.setEnabled(True)
@@ -910,11 +1031,13 @@ class MainWindow(QMainWindow):
                     QMessageBox.information(dlg, ZH.DLG_TRAIN_RESULT, "\n".join(lines[:200]) + ("\n…" if len(lines) > 200 else ""))
 
             def on_fail(msg: str) -> None:
+                """训练失败。"""
                 self._train_worker = None
                 worker.deleteLater()
                 btn_start.setEnabled(True)
                 QMessageBox.warning(dlg, ZH.RUN_TRAIN_FAIL, msg)
 
+            # 连接信号与槽
             worker.epoch_loss.connect(on_ep)
             worker.finished_ok.connect(on_ok)
             worker.failed.connect(on_fail)

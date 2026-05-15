@@ -8,7 +8,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QDragEnterEvent, QDropEvent, QKeyEvent, QMouseEvent, QPainter, QPen, QUndoStack
+from PyQt6.QtGui import (
+    QColor,
+    QDragEnterEvent,
+    QDropEvent,
+    QKeyEvent,
+    QMouseEvent,
+    QPainter,
+    QPen,
+    QResizeEvent,
+    QUndoStack,
+)
 from PyQt6.QtWidgets import (
     QGraphicsLineItem,
     QGraphicsScene,
@@ -16,7 +26,7 @@ from PyQt6.QtWidgets import (
 )
 
 from dl_vis.model.graph_document import GraphDocument
-from dl_vis.model.node_types import NodeType, palette_label_zh
+from dl_vis.model.node_types import NodeType, is_preproc_palette_type, palette_label_zh
 from dl_vis.ui.edge_item import EdgeItem
 from dl_vis.ui.graph_undo import DocStateCommand
 from dl_vis.ui import locale_zh as ZH
@@ -27,6 +37,14 @@ MIME_NODE_TYPE = "application/x-dlvis-node-type"
 
 if TYPE_CHECKING:
     pass
+
+
+def _node_accent(node_type: str) -> str | None:
+    if node_type == NodeType.DATASET.value:
+        return "dataset"
+    if is_preproc_palette_type(node_type):
+        return "dataproc"
+    return None
 
 
 class CanvasWidget(QGraphicsView):
@@ -51,6 +69,7 @@ class CanvasWidget(QGraphicsView):
 
         self._pending_drag_undo_snapshot: dict | None = None
         self._bound_py_path: Path | None = None
+        self._did_clamp_initial_scroll = False
 
         self._scene = QGraphicsScene(self)
         self._scene.setSceneRect(QRectF(-2000, -2000, 4000, 4000))
@@ -69,6 +88,21 @@ class CanvasWidget(QGraphicsView):
         self.viewport().installEventFilter(self)
 
         self._scene.selectionChanged.connect(self._on_scene_selection_changed)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        # Tab 初次布局时视口可能从 0 变大，QGraphicsView 的滚动条范围会异常；稳定后再对齐到原点附近。
+        if self._did_clamp_initial_scroll:
+            return
+        if self.viewport().width() < 64 or self.viewport().height() < 64:
+            return
+        self._did_clamp_initial_scroll = True
+        QTimer.singleShot(0, self._normalize_viewport_after_layout)
+
+    def _normalize_viewport_after_layout(self) -> None:
+        self.resetTransform()
+        self.scale(1.0, 1.0)
+        self.ensureVisible(QRectF(-80.0, -80.0, 640.0, 480.0), 24, 24)
 
     def _schedule_finalize_drag_undo(self, *_args: object) -> None:
         """推迟到事件循环下一轮再提交撤销点，确保 Qt 已完成图元位移。"""
@@ -143,7 +177,7 @@ class CanvasWidget(QGraphicsView):
         self._clear_temp_wire()
 
         for gn in self._doc.iter_nodes():
-            accent = "dataset" if gn.type == NodeType.DATASET.value else None
+            accent = _node_accent(gn.type)
             item = NodeItem(gn.id, palette_label_zh(gn.type), accent=accent)
             item.setPos(QPointF(gn.x, gn.y))
             self._wire_node_item(item)
@@ -295,7 +329,7 @@ class CanvasWidget(QGraphicsView):
         x = scene_pos.x() - NODE_WIDTH / 2
         y = scene_pos.y() - NODE_HEIGHT / 2
         gn = self._doc.add_node(node_type, x=x, y=y)
-        accent = "dataset" if gn.type == NodeType.DATASET.value else None
+        accent = _node_accent(gn.type)
         item = NodeItem(gn.id, palette_label_zh(gn.type), accent=accent)
         item.setPos(QPointF(gn.x, gn.y))
         self._wire_node_item(item)
@@ -338,7 +372,7 @@ class CanvasWidget(QGraphicsView):
             if gn is None:
                 continue
             new_gn = self._doc.add_node(gn.type, x=gn.x + 24, y=gn.y + 24, params=dict(gn.params))
-            accent = "dataset" if new_gn.type == NodeType.DATASET.value else None
+            accent = _node_accent(new_gn.type)
             item = NodeItem(new_gn.id, palette_label_zh(new_gn.type), accent=accent)
             item.setPos(QPointF(new_gn.x, new_gn.y))
             self._wire_node_item(item)

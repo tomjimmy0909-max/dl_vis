@@ -17,8 +17,16 @@ PORT_RADIUS = 8
 
 
 class NodeItem(QGraphicsObject):
-    """可拖动节点；端口用于连线。"""
+    """可拖动节点；端口用于连线。
 
+    每个 NodeItem 对应 GraphDocument 中的一个 GraphNode。
+    提供三个交互区域：
+    - 主体矩形：拖动移动、选中
+    - 左侧蓝色圆点：输入端口（接受连线）
+    - 右侧蓝色圆点：输出端口（拖出连线）
+    """
+
+    # 信号：通知画布节点位置变化、拖动结束、输出端口拖拽
     position_changed = pyqtSignal(str)  # node_id；画布据此写回 GraphDocument 并刷新连线
     live_drag_finished = pyqtSignal(str)  # 左键在节点主体释放（含拖动结束）；用于延迟提交撤销点
     output_drag_started = pyqtSignal(str, QPointF)  # node_id, scene pos of line start
@@ -29,12 +37,13 @@ class NodeItem(QGraphicsObject):
         super().__init__(parent)
         self.node_id = node_id
         self.title = title
-        self._accent = accent
+        self._accent = accent  # "dataset" 绿色；"dataproc" 浅琥珀（数据处理节点）
+        # 启用可移动、可选中、几何变化追踪
         self.setFlag(QGraphicsObject.GraphicsItemFlag.ItemIsMovable, True)
         self.setFlag(QGraphicsObject.GraphicsItemFlag.ItemIsSelectable, True)
         self.setFlag(QGraphicsObject.GraphicsItemFlag.ItemSendsGeometryChanges, True)
         self.setAcceptHoverEvents(True)
-        self._dragging_wire = False
+        self._dragging_wire = False  # 是否正在从输出端口拖出连线
 
     def boundingRect(self) -> QRectF:
         # 端口圆绘制在 x<0 / x>NODE_WIDTH，必须在包围盒内，否则拖动时旧区域不会被正确刷新而产生残影
@@ -53,8 +62,9 @@ class NodeItem(QGraphicsObject):
         return self.mapToScene(QPointF(NODE_WIDTH, NODE_HEIGHT / 2))
 
     def port_hit_scene(self, scene_pos: QPointF) -> str | None:
-        """返回 'in' / 'out' / None。"""
+        """检测场景坐标是否落在某个端口上，返回 'in' / 'out' / None。"""
         lp = self.mapFromScene(scene_pos)
+        # 左侧输入端口和右侧输出端口的点击区域
         ir = QRectF(-PORT_RADIUS, NODE_HEIGHT / 2 - PORT_RADIUS, 2 * PORT_RADIUS, 2 * PORT_RADIUS)
         or_ = QRectF(NODE_WIDTH - PORT_RADIUS, NODE_HEIGHT / 2 - PORT_RADIUS, 2 * PORT_RADIUS, 2 * PORT_RADIUS)
         if ir.contains(lp):
@@ -72,6 +82,8 @@ class NodeItem(QGraphicsObject):
         painter.setPen(pen)
         if self._accent == "dataset":
             fill = QColor(222, 245, 222)
+        elif self._accent == "dataproc":
+            fill = QColor(255, 248, 220)
         else:
             fill = QColor(245, 248, 252)
         painter.setBrush(QBrush(fill))

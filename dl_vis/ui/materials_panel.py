@@ -28,7 +28,7 @@ ROLE_KIND = Qt.ItemDataRole.UserRole + 1
 
 
 class MaterialsList(QListWidget):
-    """列表项可拖到画布，载荷为 JSON path + kind。"""
+    """可拖拽的素材列表，拖到画布生成 Dataset 节点，载荷为 JSON 格式的 path + kind。"""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -38,6 +38,7 @@ class MaterialsList(QListWidget):
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
 
     def mimeData(self, items: list[QListWidgetItem]):  # type: ignore[override]
+        """生成 MIME 数据：将路径信息以 JSON 格式编码，供画布 dropEvent 解析。"""
         md = super().mimeData(items)
         if not items:
             return md
@@ -53,7 +54,11 @@ class MaterialsList(QListWidget):
 
 
 class MaterialsPanel(QWidget):
-    """素材栏：添加文件/文件夹；支持从资源管理器拖入列表。"""
+    """素材栏：添加文件/文件夹；支持从资源管理器拖入列表。
+
+    用户可以通过按钮或文件拖放将数据集路径添加到列表中，
+    然后从列表拖到画布上创建 Dataset 节点。
+    """
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -62,6 +67,7 @@ class MaterialsPanel(QWidget):
         tip.setWordWrap(True)
         v.addWidget(tip)
 
+        # 添加文件/文件夹按钮行
         row = QHBoxLayout()
         self._btn_file = QPushButton(ZH.MATERIALS_ADD_FILE)
         self._btn_dir = QPushButton(ZH.MATERIALS_ADD_FOLDER)
@@ -74,6 +80,7 @@ class MaterialsPanel(QWidget):
         self._list = MaterialsList()
         v.addWidget(self._list, 1)
 
+        # 支持从外部资源管理器拖放文件到面板
         self.setAcceptDrops(True)
 
     def _pick_file(self) -> None:

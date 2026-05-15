@@ -19,9 +19,13 @@ TOOLTIP_SHOW_DURATION_MS = 45000
 
 
 class PaletteList(QListWidget):
-    """Drag-only 列表；MIME 携带英文节点类型；中文标签 + 延迟结构说明。"""
+    """Drag-only 列表；MIME 携带英文节点类型；中文标签 + 延迟结构说明。
 
-    def __init__(self, parent=None) -> None:
+    用户从左侧「算子」面板拖拽条目到画布，创建对应类型的节点。
+    悬停 1.2 秒后弹出详细的中文结构说明（来自 NODE_PALETTE_ZH）。
+    """
+
+    def __init__(self, parent=None, *, type_keys: list[str] | None = None) -> None:
         super().__init__(parent)
         self.setDragEnabled(True)
         self.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
@@ -36,7 +40,8 @@ class PaletteList(QListWidget):
 
         self._hover_item: QListWidgetItem | None = None
 
-        for type_key in palette_types():
+        keys = type_keys if type_keys is not None else palette_types()
+        for type_key in keys:
             pair = NODE_PALETTE_ZH.get(type_key)
             label = pair[0] if pair else type_key
             doc = pair[1] if pair else ""
